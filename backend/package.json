@@ -1,0 +1,31 @@
+{
+  "name": "job-hunt-command-center-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Feature 4: async PDF report generation via Inngest background job + Playwright, reusing the pdf-report-generator pattern. M1-M4 (walking skeleton, auth, user-scoped applications, OpenAI resume tailoring) unchanged underneath.",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "inngest:dev": "npx inngest-cli@latest dev -u http://localhost:3001/api/inngest",
+    "test": "node --test test/*.test.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^17.4.2",
+    "express": "^4.19.2",
+    "inngest": "^3.27.0",
+    "jsonwebtoken": "^9.0.2",
+    "openai": "^7.8.0",
+    "playwright": "^1.47.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0"
+  }
+}
