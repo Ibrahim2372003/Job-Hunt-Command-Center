@@ -684,3 +684,170 @@ test("GET /applications/:id/report/file: user B cannot fetch user A's report fil
 
   await prisma.$disconnect();
 });
+
+// --- M5: Update (PATCH /applications/:id) ---
+
+test("PATCH /applications/:id: without a token is rejected with 401", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+
+  const res = await request(app, "PATCH", "/applications/some-id", { company: "X", role: "Y", jobDescription: "Z" });
+
+  assert.equal(res.status, 401);
+  await prisma.$disconnect();
+});
+
+test("PATCH /applications/:id: authenticated owner can update their own application", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  await prisma.report.deleteMany();
+  await prisma.tailoredResume.deleteMany();
+  await prisma.application.deleteMany();
+  await prisma.user.deleteMany();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const token = await signUpAndGetToken(app);
+
+  const created = await request(app, "POST", "/applications", { company: "Acme", role: "Engineer", jobDescription: "A role." }, token);
+
+  const res = await request(
+    app, "PATCH", `/applications/${created.body.id}`,
+    { company: "Acme Corp", role: "Senior Engineer", jobDescription: "An updated role.", status: "APPLIED", jobUrl: "https://acme.example/jobs/1" },
+    token
+  );
+
+  assert.equal(res.status, 200);
+  assert.equal(res.body.company, "Acme Corp");
+  assert.equal(res.body.role, "Senior Engineer");
+  assert.equal(res.body.status, "APPLIED");
+  assert.equal(res.body.jobUrl, "https://acme.example/jobs/1");
+
+  const stored = await prisma.application.findUnique({ where: { id: created.body.id } });
+  assert.equal(stored.company, "Acme Corp");
+  assert.equal(stored.status, "APPLIED");
+
+  await prisma.$disconnect();
+});
+
+test("PATCH /applications/:id: user B cannot update user A's application (404)", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  await prisma.report.deleteMany();
+  await prisma.tailoredResume.deleteMany();
+  await prisma.application.deleteMany();
+  await prisma.user.deleteMany();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const tokenA = await signUpAndGetToken(app, "alice");
+  const tokenB = await signUpAndGetToken(app, "bob");
+
+  const created = await request(app, "POST", "/applications", { company: "Alice-Only Co", role: "Engineer", jobDescription: "A role." }, tokenA);
+  const res = await request(app, "PATCH", `/applications/${created.body.id}`, { company: "Hijacked", role: "X", jobDescription: "Y" }, tokenB);
+
+  assert.equal(res.status, 404);
+
+  const stored = await prisma.application.findUnique({ where: { id: created.body.id } });
+  assert.equal(stored.company, "Alice-Only Co", "Bob's request must not have changed anything");
+
+  await prisma.$disconnect();
+});
+
+test("PATCH /applications/:id: invalid input is rejected with 400, existing data untouched", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  await prisma.report.deleteMany();
+  await prisma.tailoredResume.deleteMany();
+  await prisma.application.deleteMany();
+  await prisma.user.deleteMany();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const token = await signUpAndGetToken(app);
+
+  const created = await request(app, "POST", "/applications", { company: "Acme", role: "Engineer", jobDescription: "A role." }, token);
+  const res = await request(app, "PATCH", `/applications/${created.body.id}`, { company: "" }, token);
+
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, "invalid_request");
+
+  const stored = await prisma.application.findUnique({ where: { id: created.body.id } });
+  assert.equal(stored.company, "Acme");
+
+  await prisma.$disconnect();
+});
+
+// --- M5: Delete (DELETE /applications/:id) ---
+
+test("DELETE /applications/:id: without a token is rejected with 401", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+
+  const res = await request(app, "DELETE", "/applications/some-id");
+
+  assert.equal(res.status, 401);
+  await prisma.$disconnect();
+});
+
+test("DELETE /applications/:id: authenticated owner can delete their own application, and it disappears from their list", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  await prisma.report.deleteMany();
+  await prisma.tailoredResume.deleteMany();
+  await prisma.application.deleteMany();
+  await prisma.user.deleteMany();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const token = await signUpAndGetToken(app);
+
+  const created = await request(app, "POST", "/applications", { company: "Acme", role: "Engineer", jobDescription: "A role." }, token);
+
+  const res = await request(app, "DELETE", `/applications/${created.body.id}`, undefined, token);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.deleted, true);
+
+  const stored = await prisma.application.findUnique({ where: { id: created.body.id } });
+  assert.equal(stored, null);
+
+  const list = await request(app, "GET", "/applications", undefined, token);
+  assert.equal(list.body.length, 0, "the deleted application must no longer appear in the owner's list");
+
+  await prisma.$disconnect();
+});
+
+test("DELETE /applications/:id: user B cannot delete user A's application (404), and it still exists", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  await prisma.report.deleteMany();
+  await prisma.tailoredResume.deleteMany();
+  await prisma.application.deleteMany();
+  await prisma.user.deleteMany();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const tokenA = await signUpAndGetToken(app, "alice");
+  const tokenB = await signUpAndGetToken(app, "bob");
+
+  const created = await request(app, "POST", "/applications", { company: "Alice-Only Co", role: "Engineer", jobDescription: "A role." }, tokenA);
+  const res = await request(app, "DELETE", `/applications/${created.body.id}`, undefined, tokenB);
+
+  assert.equal(res.status, 404);
+
+  const stored = await prisma.application.findUnique({ where: { id: created.body.id } });
+  assert.ok(stored, "Alice's application must still exist — Bob's delete attempt must not have succeeded");
+
+  await prisma.$disconnect();
+});
+
+test("DELETE /applications/:id: an application with existing TailoredResume and Report rows deletes cleanly (no FK violation)", async () => {
+  const prisma = createPrismaClient(TEST_DATABASE_URL);
+  await prisma.report.deleteMany();
+  await prisma.tailoredResume.deleteMany();
+  await prisma.application.deleteMany();
+  await prisma.user.deleteMany();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const token = await signUpAndGetToken(app);
+
+  const application = await createTailoredApplication(app, token);
+  await request(app, "POST", `/applications/${application.id}/report`, undefined, token);
+
+  const reportBefore = await prisma.report.findUnique({ where: { applicationId: application.id } });
+  assert.ok(reportBefore, "sanity check: a Report row really exists before deleting");
+
+  const res = await request(app, "DELETE", `/applications/${application.id}`, undefined, token);
+  assert.equal(res.status, 200, "deleting an application with dependent TailoredResume/Report rows must not hit an FK violation");
+
+  const tailoredAfter = await prisma.tailoredResume.findMany({ where: { applicationId: application.id } });
+  const reportAfter = await prisma.report.findUnique({ where: { applicationId: application.id } });
+  assert.equal(tailoredAfter.length, 0, "dependent TailoredResume rows must be gone too");
+  assert.equal(reportAfter, null, "the dependent Report row must be gone too");
+
+  await prisma.$disconnect();
+});

@@ -1,8 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { apiFetch } from "./api.js";
+import ApplicationForm from "./components/ApplicationForm.jsx";
+import ApplicationCard from "./components/ApplicationCard.jsx";
+import LoadingState from "./components/LoadingState.jsx";
+import EmptyState from "./components/EmptyState.jsx";
+import ErrorMessage from "./components/ErrorMessage.jsx";
 
-const STATUSES = ["SAVED", "APPLIED", "INTERVIEW", "OFFER", "REJECTED"];
-const emptyForm = { company: "", role: "", jobUrl: "", jobDescription: "", status: "SAVED" };
 const TOKEN_STORAGE_KEY = "jobhunt_token";
 
 export default function App() {
@@ -50,30 +53,39 @@ function AuthScreen({ onAuthSuccess }) {
   }
 
   return (
-    <div style={{ maxWidth: 360, margin: "4rem auto", fontFamily: "sans-serif", padding: "0 1rem" }}>
-      <h1>Job Hunt Command Center</h1>
-      <div style={{ display: "flex", gap: "1rem", marginBottom: "1rem" }}>
-        <button type="button" onClick={() => setMode("login")} disabled={mode === "login"}>
+    <div className="auth-shell">
+      <h1 style={{ marginBottom: "1.5rem" }}>Job Hunt Command Center</h1>
+      <div className="auth-tabs">
+        <button type="button" className="btn btn-secondary" onClick={() => setMode("login")} disabled={mode === "login"}>
           Log in
         </button>
-        <button type="button" onClick={() => setMode("signup")} disabled={mode === "signup"}>
+        <button type="button" className="btn btn-secondary" onClick={() => setMode("signup")} disabled={mode === "signup"}>
           Sign up
         </button>
       </div>
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-        <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-        <input
-          type="password"
-          placeholder={mode === "signup" ? "Password (min 8 characters)" : "Password"}
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        <button type="submit" disabled={submitting}>
-          {submitting ? "..." : mode === "login" ? "Log in" : "Sign up"}
-        </button>
+      <form onSubmit={handleSubmit} className="card card-padded" aria-label={mode === "login" ? "Log in" : "Sign up"}>
+        <div className="field">
+          <label htmlFor="auth-email">Email</label>
+          <input id="auth-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </div>
+        <div className="field">
+          <label htmlFor="auth-password">Password</label>
+          <input
+            id="auth-password"
+            type="password"
+            placeholder={mode === "signup" ? "Min 8 characters" : undefined}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+        </div>
+        <div className="form-actions">
+          <button type="submit" className="btn btn-primary" disabled={submitting}>
+            {submitting ? "..." : mode === "login" ? "Log in" : "Sign up"}
+          </button>
+        </div>
         {errors.length > 0 && (
-          <ul style={{ color: "#b00020", margin: 0 }}>
+          <ul className="error-list" role="alert">
             {errors.map((e) => (
               <li key={e}>{e}</li>
             ))}
@@ -86,11 +98,16 @@ function AuthScreen({ onAuthSuccess }) {
 
 function ApplicationsScreen({ token, userEmail, onLogout }) {
   const [applications, setApplications] = useState([]);
-  const [form, setForm] = useState(emptyForm);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [errors, setErrors] = useState([]);
   const [loadError, setLoadError] = useState(null);
+
+  const [editingApplication, setEditingApplication] = useState(null);
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const [formErrors, setFormErrors] = useState([]);
+  const [addFormResetCount, setAddFormResetCount] = useState(0);
+
+  const [deletingId, setDeletingId] = useState(null);
+  const [actionError, setActionError] = useState(null);
 
   async function loadApplications() {
     setLoading(true);
@@ -110,80 +127,122 @@ function ApplicationsScreen({ token, userEmail, onLogout }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleSubmit(event) {
-    event.preventDefault();
-    setSubmitting(true);
-    setErrors([]);
-    const { ok, status, data } = await apiFetch("/applications", { method: "POST", body: form, token });
-    setSubmitting(false);
+  async function handleFormSubmit(values) {
+    setFormSubmitting(true);
+    setFormErrors([]);
+    setActionError(null);
+
+    if (editingApplication) {
+      const { ok, status, data } = await apiFetch(`/applications/${editingApplication.id}`, { method: "PATCH", body: values, token });
+      setFormSubmitting(false);
+      if (!ok) {
+        if (status === 401) return onLogout();
+        setFormErrors(data.messages || [data.message || "Something went wrong."]);
+        return; // stay in edit mode; the form's own state (what the user typed) is untouched
+      }
+      setApplications((prev) => prev.map((a) => (a.id === data.id ? data : a)));
+      setEditingApplication(null);
+    } else {
+      const { ok, status, data } = await apiFetch("/applications", { method: "POST", body: values, token });
+      setFormSubmitting(false);
+      if (!ok) {
+        if (status === 401) return onLogout();
+        setFormErrors(data.messages || [data.message || "Something went wrong."]);
+        return; // preserve entered values — form is not remounted on failure
+      }
+      setApplications((prev) => [data, ...prev]);
+      setAddFormResetCount((n) => n + 1); // forces a fresh, empty form after a successful add
+    }
+  }
+
+  function handleEditClick(application) {
+    setFormErrors([]);
+    setActionError(null);
+    setEditingApplication(application);
+  }
+
+  function handleCancelEdit() {
+    setFormErrors([]);
+    setEditingApplication(null);
+  }
+
+  async function handleDelete(application) {
+    if (deletingId) return; // a delete is already in flight; ignore duplicate clicks
+    const confirmed = window.confirm(`Delete the application for ${application.role} at ${application.company}? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setDeletingId(application.id);
+    setActionError(null);
+    const { ok, status, data } = await apiFetch(`/applications/${application.id}`, { method: "DELETE", token });
+    setDeletingId(null);
+
     if (!ok) {
       if (status === 401) return onLogout();
-      setErrors(data.messages || [data.message || "Something went wrong."]);
-      return;
+      setActionError(data.message || "Could not delete the application.");
+      return; // application stays visible — deletion did not happen
     }
-    setForm(emptyForm);
-    await loadApplications();
+    setApplications((prev) => prev.filter((a) => a.id !== application.id));
   }
 
-  function updateField(field) {
-    return (event) => setForm((prev) => ({ ...prev, [field]: event.target.value }));
-  }
+  // A stable-until-it-should-change key: switching which application
+  // is being edited (or leaving edit mode) changes this, which is
+  // exactly when ApplicationForm should remount and reset. A failed
+  // save changes neither editingApplication.id nor addFormResetCount,
+  // so the key — and therefore the form's in-progress state — stays
+  // untouched.
+  const formKey = editingApplication ? `edit-${editingApplication.id}` : `add-${addFormResetCount}`;
+  const formInitialValues = useMemo(() => {
+    if (!editingApplication) return undefined;
+    const { company, role, jobUrl, jobDescription, status } = editingApplication;
+    return { company, role, jobUrl: jobUrl ?? "", jobDescription, status };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingApplication?.id]);
 
   return (
-    <div style={{ maxWidth: 640, margin: "2rem auto", fontFamily: "sans-serif", padding: "0 1rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+    <div className="page">
+      <div className="page-header">
         <h1>Job Hunt Command Center</h1>
-        <button type="button" onClick={onLogout}>
-          Log out{userEmail ? ` (${userEmail})` : ""}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {userEmail && <span className="user-email">{userEmail}</span>}
+          <button type="button" className="btn btn-secondary btn-sm" onClick={onLogout}>
+            Log out
+          </button>
+        </div>
       </div>
-      <p style={{ color: "#555" }}>M3 — signed in, applications are private to your account.</p>
 
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginBottom: "2rem" }}>
-        <input placeholder="Company" value={form.company} onChange={updateField("company")} required />
-        <input placeholder="Role" value={form.role} onChange={updateField("role")} required />
-        <input placeholder="Job URL (optional)" value={form.jobUrl} onChange={updateField("jobUrl")} />
-        <textarea placeholder="Job description" value={form.jobDescription} onChange={updateField("jobDescription")} required rows={4} />
-        <select value={form.status} onChange={updateField("status")}>
-          {STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
+      <ApplicationForm
+        key={formKey}
+        mode={editingApplication ? "edit" : "add"}
+        initialValues={formInitialValues}
+        onSubmit={handleFormSubmit}
+        onCancel={handleCancelEdit}
+        submitting={formSubmitting}
+        errors={formErrors}
+      />
+
+      <h2 className="section-title">Applications</h2>
+
+      <ErrorMessage message={actionError} />
+
+      {loading && <LoadingState label="Loading applications..." />}
+      {loadError && <ErrorMessage message={`Could not load applications: ${loadError}`} />}
+      {!loading && !loadError && applications.length === 0 && (
+        <EmptyState message="No applications yet. Add your first application above." />
+      )}
+
+      {!loading && !loadError && applications.length > 0 && (
+        <ul className="applications-list">
+          {applications.map((application) => (
+            <ApplicationCard
+              key={application.id}
+              application={application}
+              onEdit={handleEditClick}
+              onDelete={handleDelete}
+              deleting={deletingId === application.id}
+            />
           ))}
-        </select>
-        <button type="submit" disabled={submitting}>
-          {submitting ? "Adding..." : "Add application"}
-        </button>
-        {errors.length > 0 && (
-          <ul style={{ color: "#b00020", margin: 0 }}>
-            {errors.map((e) => (
-              <li key={e}>{e}</li>
-            ))}
-          </ul>
-        )}
-      </form>
-
-      <h2>Applications</h2>
-      {loading && <p>Loading...</p>}
-      {loadError && <p style={{ color: "#b00020" }}>Could not load applications: {loadError}</p>}
-      {!loading && !loadError && applications.length === 0 && <p>No applications yet.</p>}
-      <ul style={{ listStyle: "none", padding: 0 }}>
-        {applications.map((app) => (
-          <li key={app.id} style={{ border: "1px solid #ddd", borderRadius: 4, padding: "0.75rem", marginBottom: "0.5rem" }}>
-            <strong>
-              {app.role} @ {app.company}
-            </strong>{" "}
-            — {app.status}
-            {app.jobUrl && (
-              <div>
-                <a href={app.jobUrl} target="_blank" rel="noreferrer">
-                  {app.jobUrl}
-                </a>
-              </div>
-            )}
-          </li>
-        ))}
-      </ul>
+        </ul>
+      )}
     </div>
   );
 }

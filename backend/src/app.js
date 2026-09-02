@@ -40,8 +40,10 @@ export function createApp({ prisma, openaiClient, inngestClient = inngest, rende
   // this project doesn't have at M2.
   app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    // M3 added `Authorization: Bearer <token>` on every authenticated
+res.setHeader(
+  "Access-Control-Allow-Methods",
+  "GET, POST, PATCH, DELETE, OPTIONS"
+);    // M3 added `Authorization: Bearer <token>` on every authenticated
     // request; this header list was never updated to match, so a real
     // browser's CORS preflight rejected every authenticated request
     // (list load and form submit alike) before it ever reached the
@@ -136,6 +138,72 @@ export function createApp({ prisma, openaiClient, inngestClient = inngest, rende
     } catch (err) {
       console.error("GET /applications failed:", err.message);
       return res.status(500).json({ error: "request_failed", message: "Could not list applications." });
+    }
+  });
+
+  // Update: reuses validateApplicationInput exactly as POST does —
+  // the Edit form resubmits the full set of fields (not a partial
+  // patch), so the same "company/role/jobDescription required"
+  // validation applies unchanged. Same 404-not-403 ownership check as
+  // every other application route.
+  app.patch("/applications/:id", requireAuth, async (req, res) => {
+    const result = validateApplicationInput(req.body);
+    if (!result.valid) {
+      return res.status(400).json({ error: "invalid_request", messages: result.errors });
+    }
+
+    let application;
+    try {
+      application = await prisma.application.findUnique({ where: { id: req.params.id } });
+    } catch (err) {
+      console.error("PATCH /applications/:id failed (lookup):", err.message);
+      return res.status(500).json({ error: "request_failed", message: "Could not look up the application." });
+    }
+    if (!application || application.userId !== req.userId) {
+      return res.status(404).json({ error: "not_found", message: `No application with id "${req.params.id}".` });
+    }
+
+    try {
+      const updated = await prisma.application.update({ where: { id: application.id }, data: result.data });
+      return res.json(updated);
+    } catch (err) {
+      console.error("PATCH /applications/:id failed:", err.message);
+      return res.status(500).json({ error: "request_failed", message: "Could not update the application." });
+    }
+  });
+
+  // Delete: Application has non-cascading FK relations to both
+  // TailoredResume and Report (no onDelete: Cascade — deliberate,
+  // matching Feature 4's precedent). Deleting an Application with
+  // existing children would hit the exact FK-violation this project
+  // already learned about the hard way in test cleanup — so children
+  // are deleted first, in a transaction, respecting that existing
+  // relation behavior instead of changing it.
+  app.delete("/applications/:id", requireAuth, async (req, res) => {
+    let application;
+    try {
+      application = await prisma.application.findUnique({ where: { id: req.params.id } });
+    } catch (err) {
+      console.error("DELETE /applications/:id failed (lookup):", err.message);
+      return res.status(500).json({ error: "request_failed", message: "Could not look up the application." });
+    }
+    if (!application || application.userId !== req.userId) {
+      return res.status(404).json({ error: "not_found", message: `No application with id "${req.params.id}".` });
+    }
+
+    try {
+      await prisma.$transaction([
+        prisma.report.deleteMany({ where: { applicationId: application.id } }),
+        prisma.tailoredResume.deleteMany({ where: { applicationId: application.id } }),
+        prisma.application.delete({ where: { id: application.id } }),
+      ]);
+      // A JSON body (not a bare 204) — every other response in this
+      // API is JSON, and the frontend's apiFetch always calls
+      // res.json(); a truly empty 204 body would make that throw.
+      return res.status(200).json({ deleted: true, id: application.id });
+    } catch (err) {
+      console.error("DELETE /applications/:id failed:", err.message);
+      return res.status(500).json({ error: "request_failed", message: "Could not delete the application." });
     }
   });
 
