@@ -1,0 +1,166 @@
+diff -ruN a/frontend/test/api.http.test.js b/frontend/test/api.http.test.js
+--- a/frontend/test/api.http.test.js	1970-01-01 00:00:00.000000000 +0000
++++ b/frontend/test/api.http.test.js	2026-10-24 02:35:39.182776444 +0000
+@@ -0,0 +1,114 @@
++import test from "node:test";
++import assert from "node:assert/strict";
++import http from "node:http";
++import { apiFetch, apiFetchBlob } from "../src/api.js";
++
++// Real HTTP server + the REAL global fetch (undici). Only the URL's origin is
++// rewritten, so these tests never touch whatever is running on port 5000.
++// This exercises what a mocked fetch cannot: how abort/timeout surface while
++// the response BODY is still being read.
++const server = http.createServer((req, res) => {
++  const url = req.url;
++  if (url === "/json") {
++    res.writeHead(200, { "content-type": "application/json" });
++    return res.end(JSON.stringify({ hello: "world" }));
++  }
++  if (url === "/unauthorized") {
++    res.writeHead(401, { "content-type": "application/json" });
++    return res.end(JSON.stringify({ error: "unauthorized", message: "Invalid or expired token." }));
++  }
++  if (url === "/html502") {
++    res.writeHead(502, { "content-type": "text/html" });
++    return res.end("<html>Bad gateway</html>");
++  }
++  if (url === "/pdf") {
++    res.writeHead(200, { "content-type": "application/pdf" });
++    return res.end("%PDF-1.4 real bytes");
++  }
++  if (url === "/stall-headers") return; // never answers
++  if (url === "/stall-json-body" || url === "/stall-pdf-body") {
++    // headers arrive, body starts, then the connection stalls
++    res.writeHead(200, { "content-type": url.includes("pdf") ? "application/pdf" : "application/json" });
++    res.write(url.includes("pdf") ? "%PDF-1.4 par" : '{"partial":');
++    return;
++  }
++  if (url === "/stall-error-body") {
++    res.writeHead(500, { "content-type": "application/json" });
++    res.write('{"message":');
++    return;
++  }
++  res.writeHead(404).end();
++});
++
++let base;
++const realFetch = globalThis.fetch;
++test.before(async () => {
++  await new Promise((r) => server.listen(0, "127.0.0.1", r));
++  base = `http://127.0.0.1:${server.address().port}`;
++  globalThis.fetch = (url, init) => realFetch(String(url).replace("http://localhost:5000", base), init);
++});
++test.after(async () => {
++  globalThis.fetch = realFetch;
++  server.closeAllConnections?.();
++  await new Promise((r) => server.close(r));
++});
++
++test("real HTTP: json, 401, non-JSON 502 and a PDF blob all come back in the documented shapes", async () => {
++  assert.deepEqual(await apiFetch("/json"), { ok: true, status: 200, data: { hello: "world" } });
++  const unauth = await apiFetch("/unauthorized");
++  assert.equal(unauth.status, 401);
++  assert.equal(unauth.data.error, "unauthorized");
++  const html = await apiFetch("/html502");
++  assert.equal(html.data.error, "invalid_response");
++  const pdf = await apiFetchBlob("/pdf");
++  assert.equal(pdf.ok, true);
++  assert.equal(await pdf.blob.text(), "%PDF-1.4 real bytes");
++});
++
++test("real HTTP: timeout while waiting for HEADERS -> timedOut", async () => {
++  const r = await apiFetch("/stall-headers", { timeoutMs: 60 });
++  assert.equal(r.timedOut, true);
++  assert.equal(r.aborted, undefined);
++});
++
++test("real HTTP: timeout while consuming a stalled JSON BODY -> timedOut (not a generic 'unexpected response')", async () => {
++  const r = await apiFetch("/stall-json-body", { timeoutMs: 80 });
++  assert.equal(r.timedOut, true, JSON.stringify(r));
++  assert.equal(r.data.error, "timeout");
++});
++
++test("real HTTP: caller abort while consuming a stalled JSON BODY -> aborted, silently (not timedOut, not invalid_response)", async () => {
++  const ctrl = new AbortController();
++  const pending = apiFetch("/stall-json-body", { signal: ctrl.signal, timeoutMs: 5_000 });
++  setTimeout(() => ctrl.abort(), 80);
++  const r = await pending;
++  assert.equal(r.aborted, true, JSON.stringify(r));
++  assert.equal(r.timedOut, undefined);
++});
++
++test("real HTTP: PDF download stalled mid-body -> timedOut; caller abort mid-body -> aborted", async () => {
++  const t = await apiFetchBlob("/stall-pdf-body", { timeoutMs: 80 });
++  assert.equal(t.timedOut, true, JSON.stringify(t));
++
++  const ctrl = new AbortController();
++  const pending = apiFetchBlob("/stall-pdf-body", { signal: ctrl.signal, timeoutMs: 5_000 });
++  setTimeout(() => ctrl.abort(), 80);
++  const a = await pending;
++  assert.equal(a.aborted, true, JSON.stringify(a));
++  assert.equal(a.timedOut, undefined);
++});
++
++test("real HTTP: stalled ERROR body on a non-OK blob response is classified by cause, not mislabeled", async () => {
++  const t = await apiFetchBlob("/stall-error-body", { timeoutMs: 80 });
++  assert.equal(t.timedOut, true, JSON.stringify(t));
++});
++
++test("real HTTP: abort that arrives before the request starts is aborted, and a late abort after completion is harmless", async () => {
++  const pre = new AbortController(); pre.abort();
++  assert.equal((await apiFetch("/json", { signal: pre.signal })).aborted, true);
++
++  const late = new AbortController();
++  const ok = await apiFetch("/json", { signal: late.signal, timeoutMs: 5_000 });
++  late.abort();
++  assert.equal(ok.ok, true);
++});
+diff -ruN a/frontend/test/reports.test.js b/frontend/test/reports.test.js
+--- a/frontend/test/reports.test.js	2026-10-24 02:31:55.219298267 +0000
++++ b/frontend/test/reports.test.js	2026-10-24 02:36:50.660635167 +0000
+@@ -146,3 +146,44 @@
+   assert.deepEqual(nextActionBeforeRetry({ kind: "error", transient: true, message: "x" }), { type: "apply" }, "unknown state: surface it instead of guessing");
+   assert.deepEqual(nextActionBeforeRetry({ kind: "unauthorized" }), { type: "apply" });
+ });
++
++// --- the "Try again after FAILED" re-check, composed from the same pure steps handleRequest runs:
++//     interpretReportStatusResponse(apiFetch result) -> nextActionBeforeRetry(...)
++//     ReportPanel then maps kind "unauthorized" -> logout, "error" -> visible message + "Check again".
++function recheck(apiResult) {
++  const result = interpretReportStatusResponse(apiResult);
++  return { result, action: nextActionBeforeRetry(result) };
++}
++
++test("re-check: HTTP 401 is surfaced as 'unauthorized' (-> logout) and NEVER proceeds to enqueue a new job", () => {
++  const { result, action } = recheck({ ok: false, status: 401, data: { error: "unauthorized", message: "Invalid or expired token." } });
++  assert.equal(result.kind, "unauthorized");
++  assert.notEqual(action.type, "request");
++  assert.deepEqual(action, { type: "apply" });
++});
++
++test("re-check: a failing status check keeps a useful message and does NOT enqueue a job (server error, timeout, network)", () => {
++  const cases = [
++    [{ ok: false, status: 500, data: { error: "request_failed", message: "Could not look up the application." } }, /Could not look up the application/],
++    [{ ok: false, status: 0, timedOut: true, data: { error: "timeout", message: "The server took too long to respond. Please try again." } }, /took too long/],
++    [{ ok: false, status: 0, data: { error: "network_error", message: "Could not reach the server. Check your connection and try again." } }, /Could not reach the server/],
++    [{ ok: false, status: 502, data: { error: "invalid_response", message: "The server returned an unexpected response." } }, /unexpected response/],
++  ];
++  for (const [apiResult, pattern] of cases) {
++    const { result, action } = recheck(apiResult);
++    assert.equal(result.kind, "error");
++    assert.match(result.message, pattern, "message is preserved for display");
++    assert.deepEqual(action, { type: "apply" }, "surface the error; do not guess and enqueue");
++  }
++});
++
++test("re-check: only a server-confirmed FAILED or NONE leads to a new request; PENDING waits; DONE is shown", () => {
++  assert.equal(recheck({ ok: true, status: 200, data: { status: "failed", error: "Report generation failed. Please try requesting the report again." } }).action.type, "request");
++  assert.equal(recheck({ ok: false, status: 404, data: { error: "not_found", message: "No report has been requested for this application yet." } }).action.type, "request");
++  assert.equal(recheck({ ok: true, status: 200, data: { status: "pending" } }).action.type, "poll");
++  assert.equal(recheck({ ok: true, status: 200, data: { status: "done", reportId: "r", url: "/x" } }).result.kind, "done");
++});
++
++test("a transient 'pending' response must not be confused with a retry decision for unknown kinds", () => {
++  assert.deepEqual(nextActionBeforeRetry({ kind: "something-new" }), { type: "apply" }, "unknown kinds fall back to surfacing, never to enqueueing");
++});
