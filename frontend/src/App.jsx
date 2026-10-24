@@ -236,6 +236,8 @@ function ApplicationsScreen({ token, userEmail, onLogout }) {
             <ApplicationCard
               key={application.id}
               application={application}
+              token={token}
+              onUnauthorized={onLogout}
               onEdit={handleEditClick}
               onDelete={handleDelete}
               deleting={deletingId === application.id}

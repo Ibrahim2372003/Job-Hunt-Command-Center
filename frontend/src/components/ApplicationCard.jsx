@@ -1,4 +1,7 @@
+import { useState } from "react";
 import StatusBadge from "./StatusBadge.jsx";
+import TailorPanel from "./TailorPanel.jsx";
+import ReportPanel from "./ReportPanel.jsx";
 
 // Only ever render a URL as a clickable link if it's a genuine
 // http(s) URL — guards against both a malformed string breaking
@@ -12,7 +15,18 @@ function isSafeHttpUrl(value) {
   }
 }
 
-export default function ApplicationCard({ application, onEdit, onDelete, deleting }) {
+export default function ApplicationCard({ application, token, onUnauthorized, onEdit, onDelete, deleting }) {
+  // The AI tools mount on first open (so listing applications doesn't fire a
+  // report-status request per card) and then stay mounted while collapsed, so
+  // typed bullets, results, and an in-progress report poll are not lost.
+  const [open, setOpen] = useState(false);
+  const [everOpened, setEverOpened] = useState(false);
+  const toolsId = `ai-tools-${application.id}`;
+
+  function toggleTools() {
+    setOpen((o) => !o);
+    setEverOpened(true);
+  }
   const hasUrl = Boolean(application.jobUrl);
   const hasSafeUrl = hasUrl && isSafeHttpUrl(application.jobUrl);
 
@@ -54,6 +68,21 @@ export default function ApplicationCard({ application, onEdit, onDelete, deletin
           )}
         </div>
       )}
+
+      <div>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={toggleTools} aria-expanded={open} aria-controls={toolsId}>
+          {open ? "Hide AI tools" : "AI tools"}
+        </button>
+      </div>
+
+      <div id={toolsId} className="ai-tools" hidden={!open}>
+        {everOpened && (
+          <>
+            <TailorPanel application={application} token={token} onUnauthorized={onUnauthorized} />
+            <ReportPanel application={application} token={token} onUnauthorized={onUnauthorized} />
+          </>
+        )}
+      </div>
     </li>
   );
 }
