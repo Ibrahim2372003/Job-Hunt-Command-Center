@@ -1,460 +1,1280 @@
-# Feature 4 — Async PDF Export + Background Job
+# Usage Metering & Billing Engine — Full Implementation Task
 
-We are now continuing the core Job Hunt Command Center capstone.
+You are the lead backend engineer responsible for building a production-quality capstone project called:
 
-Do NOT work on frontend UI/UX polish yet. Do NOT add visual styling, Edit/Delete UI, or unrelated features.
+**Usage Metering & Billing Engine**
 
-The next required core feature is:
+This is a FlyRank Internship Backend Track Capstone.
 
-**Async PDF export using a background job.**
+Your job is NOT to blindly generate code. You must first inspect the current repository, understand its structure, identify what already exists, and then implement the system incrementally with strong correctness, security, testing, and documentation.
 
-This feature should cover the remaining capstone concepts:
+The final result should be both:
 
-* Background jobs
-* PDF reporting
-
-## Existing Project Context
-
-The project currently has:
-
-* PostgreSQL + Prisma
-* Authentication with JWT
-* User-owned job applications
-* OpenAI integration for resume tailoring
-* `TailoredResume` persisted in PostgreSQL
-* Existing Prisma migrations
-* Existing backend tests
-* Express backend
-* React/Vite frontend
-* A previous `pdf-report-generator` project and background-job/Inngest pattern from earlier work that may be useful as a reference.
-
-The current Prisma database is already migrated and up to date.
-
-Do not modify existing migrations unless there is a concrete technical reason.
+1. **100% compliant with the mandatory capstone requirements**
+2. A polished, demo-ready SaaS-style product that is strong enough to showcase in a backend portfolio.
 
 ---
 
-# Goal
+# 1. PRIMARY OBJECTIVE
 
-Implement an asynchronous report/PDF generation flow for an authenticated application.
+Build a multi-tenant backend service that:
 
-Desired API:
+* tracks customer usage
+* calculates usage costs
+* enforces subscription quotas
+* supports Free and Pro plans
+* integrates with Stripe Test Mode
+* handles Stripe webhooks securely
+* prevents duplicate usage through idempotency
+* isolates all tenant data
+* exposes a dummy billable API endpoint
+* provides a polished dashboard for usage, billing, API keys, and account information
+
+The core billing/metering contract has absolute priority over optional features.
+
+DO NOT sacrifice correctness of the core requirements to add UI or stretch features.
+
+---
+
+# 2. MANDATORY TECHNOLOGY STACK
+
+Use only the required/free technologies unless there is a strong technical reason otherwise:
+
+* Node.js
+* Express
+* PostgreSQL
+* Prisma ORM
+* Docker / Docker Compose
+* Stripe Test Mode
+* Stripe CLI
+* React + Vite for the dashboard
+* JWT authentication
+* Standard REST APIs
+
+Keep the architecture simple and maintainable.
+
+Do NOT introduce unnecessary infrastructure such as Redis, RabbitMQ, Kubernetes, microservices, etc.
+
+This is a capstone, not an enterprise distributed system.
+
+---
+
+# 3. IMPORTANT WORKING RULE
+
+Before changing anything:
+
+## STEP 1 — AUDIT THE REPOSITORY
+
+Inspect:
+
+* directory structure
+* package.json files
+* existing source code
+* database configuration
+* Prisma schema/migrations
+* existing tests
+* environment files
+* Docker configuration
+* README
+* existing frontend
+* existing API routes
+* existing authentication
+* existing Stripe code
+
+Determine what is already implemented and what is missing.
+
+Do NOT overwrite working code unnecessarily.
+
+Prefer minimal, maintainable, additive changes.
+
+At the beginning, provide a short implementation plan based on the actual repository.
+
+Then implement it.
+
+---
+
+# 4. CORE DATA MODEL
+
+The database must support strict multi-tenant isolation.
+
+At minimum implement:
+
+## User
+
+* id
+* email
+* passwordHash
+* tenantId
+* createdAt
+* updatedAt
+
+## Tenant
+
+* id
+* name
+* createdAt
+* updatedAt
+
+## Plan
+
+* id
+* name
+* monthlyApiCallLimit
+* monthlyAiTokenLimit
+* priceCents
+* Stripe-related identifiers where appropriate
+* createdAt
+* updatedAt
+
+Plans:
+
+### FREE
+
+Example limits:
+
+* 10,000 API calls/month
+* 1,000,000 AI tokens/month
+* $0/month
+
+### PRO
+
+Example limits:
+
+* 100,000 API calls/month
+* 10,000,000 AI tokens/month
+* configurable Stripe test price
+
+Do not hard-code business logic throughout the application. Plans and pricing should come from the database/configuration.
+
+## Subscription
+
+Must represent the tenant's current subscription.
+
+Include appropriate fields such as:
+
+* id
+* tenantId
+* planId
+* status
+* stripeCustomerId
+* stripeSubscriptionId
+* currentPeriodStart
+* currentPeriodEnd
+* createdAt
+* updatedAt
+
+Stripe should be treated as the source of truth for payment state.
+
+## UsageEvent
+
+Must include enough information to audit every billable action.
+
+Suggested fields:
+
+* id
+* tenantId
+* type
+* quantity
+* idempotencyKey
+* inputTokens
+* cachedInputTokens
+* outputTokens
+* reasoningTokens
+* costMicros
+* metadata
+* createdAt
+
+The idempotency key must be uniquely constrained appropriately so database-level uniqueness protects against duplicate billing.
+
+## WebhookEvent
+
+Used to deduplicate Stripe webhook events.
+
+Suggested:
+
+* id
+* stripeEventId UNIQUE
+* eventType
+* processedAt
+* payload/metadata if appropriate
+* createdAt
+
+## ApiKey
+
+For API consumers.
+
+Suggested:
+
+* id
+* tenantId
+* name
+* keyHash
+* keyPrefix
+* revokedAt
+* createdAt
+* lastUsedAt
+
+NEVER store the raw API key in the database.
+
+---
+
+# 5. FINANCIAL PRECISION
+
+This is mandatory.
+
+NEVER use floating point numbers for financial values.
+
+Examples:
+
+GOOD:
 
 ```text
-POST /applications/:id/report
+priceCents = 2900
+costMicros = 1250
 ```
 
-should enqueue/request report generation and immediately return:
+BAD:
 
 ```text
-202 Accepted
+price = 29.00
+cost = 0.00125
 ```
 
-with a response indicating that the report is pending.
+All financial calculations must use integers.
 
-A background job should then:
+The pricing implementation must be deterministic and testable.
 
-1. Verify the application belongs to the authenticated user.
-2. Load the application and its tailored resume data.
-3. Generate appropriate HTML/content for the report.
-4. Render that HTML into a PDF using Playwright or the existing PDF generation approach.
-5. Persist the generated PDF somewhere appropriate for the current project.
-6. Update the report status.
+---
 
-Then:
+# 6. IDEMPOTENT METERING
 
-```text
-GET /applications/:id/report
+This is one of the most important requirements.
+
+Every billable action must accept:
+
+```http
+Idempotency-Key: <unique-key>
 ```
 
-should return the current report state:
+Example:
 
-```text
-pending
+```http
+POST /generate
+Authorization: Bearer <API_KEY>
+Idempotency-Key: abc123
 ```
 
-or
+If the client retries the exact same billable request with the same idempotency key:
 
-```text
-done
+* DO NOT create another UsageEvent
+* DO NOT charge the tenant again
+* DO NOT increment usage again
+* return the original result/response where appropriate
+
+The database must protect against races.
+
+Do not implement idempotency only with:
+
+```js
+if (existing) ...
 ```
 
-with access to the generated PDF,
+because concurrent requests can bypass that check.
+
+Use appropriate database constraints/transactions/locking.
+
+Add tests for:
+
+* first request
+* retry
+* duplicate key
+* different keys
+* concurrent requests
+* cross-tenant keys
+
+---
+
+# 7. QUOTA ENFORCEMENT
+
+Before allowing a billable action:
+
+1. Authenticate the caller
+2. Identify the tenant
+3. Identify the tenant's plan
+4. Calculate current-period usage
+5. Calculate requested usage
+6. Check whether the action would exceed the quota
+7. Reject if necessary
+8. Otherwise perform the action and record usage atomically where appropriate
+
+Use:
+
+```http
+429 Too Many Requests
+```
 
 or:
 
-```text
-failed
+```http
+402 Payment Required
 ```
 
-with a safe error message.
+with a clear JSON error message.
 
----
+Example:
 
-# IMPORTANT: Inspect Before Implementing
-
-Before writing code, inspect the current repository carefully.
-
-Specifically inspect:
-
-### Backend
-
-* `backend/package.json`
-* `backend/src/app.js`
-* `backend/src/server.js`
-* `backend/src/db.js`
-* `backend/src/llm.js`
-* `backend/src/auth.js`
-* `backend/src/validation.js`
-* `backend/prisma/schema.prisma`
-* all current Prisma migrations
-* existing application routes
-* existing application tests
-
-### Previous PDF implementation
-
-If the previous `pdf-report-generator` and/or background-job project is available locally, inspect it and reuse proven patterns where appropriate.
-
-Do not blindly copy old code.
-
-Determine:
-
-* Which PDF library is currently available.
-* Whether Playwright is already installed.
-* Whether Inngest or another job mechanism is already installed.
-* How the previous project handled browser lifecycle.
-* How PDFs were stored.
-* How background failures were handled.
-
----
-
-# Architecture Decision
-
-Choose the simplest reliable implementation that fits the current project.
-
-Prefer reusing the existing Inngest/background-job pattern if it is already available or can be integrated cleanly.
-
-Do NOT introduce Redis, RabbitMQ, BullMQ, SQS, or another infrastructure dependency unless the existing architecture genuinely requires it.
-
-For this capstone, a simple reliable background-job implementation is preferable to unnecessary infrastructure.
-
----
-
-# Database
-
-Inspect the current Prisma schema first.
-
-We need persistent report state associated with an application.
-
-If the current schema already contains an appropriate report model, reuse it.
-
-If not, add the minimum necessary model.
-
-For example, conceptually:
-
-```text
-Report
-------
-id
-applicationId
-status
-filePath / fileUrl
-error
-createdAt
-updatedAt
+```json
+{
+  "error": "Monthly API call quota exceeded",
+  "code": "QUOTA_EXCEEDED"
+}
 ```
 
-Use an enum or constrained status representation where appropriate:
+Do not allow concurrent requests to bypass quotas.
 
-```text
-PENDING
-DONE
-FAILED
-```
-
-Ensure the relationship respects application ownership and existing cascade behavior.
-
-Do not duplicate data unnecessarily.
-
-Do not store the actual PDF binary inside PostgreSQL unless the existing architecture specifically requires that.
+Test boundary cases carefully.
 
 ---
 
-# API
+# 8. USAGE TYPES
+
+Keep the scope intentionally small.
+
+Only support:
+
+## API_CALL
+
+One billable API request.
+
+## AI_TOKENS
+
+AI token consumption.
+
+Do NOT create unnecessary usage categories.
+
+---
+
+# 9. AI TOKEN PRICING
+
+Implement a dedicated pricing/calculation module.
+
+It must correctly handle:
+
+* normal input tokens
+* cached input tokens
+* output tokens
+* reasoning tokens
+
+Important:
+
+Cached input tokens have a cheaper price.
+
+Reasoning tokens are billed as output tokens.
+
+Do NOT simply add all token categories together.
+
+The calculation must distinguish the categories and apply the correct price to each category.
+
+Use integer micro-units/cents.
+
+Create unit tests covering:
+
+* normal input only
+* cached input only
+* output only
+* reasoning only
+* mixed usage
+* zero tokens
+* large values
+* rounding behavior
+* integer precision
+
+Pricing rates should be centralized/configurable.
+
+Do not scatter pricing constants throughout controllers.
+
+---
+
+# 10. BILLABLE ENDPOINT
 
 Implement:
 
-## POST `/applications/:id/report`
+```http
+POST /generate
+```
 
-Requirements:
+This is a dummy billable endpoint.
 
-* Requires authentication.
-* Verify the application belongs to the authenticated user.
-* Verify that the application has the data required to generate the report.
-* Create/update a pending report record.
-* Enqueue the background job.
-* Return HTTP `202`.
-* Do not wait for PDF generation to finish.
+It does NOT need a real AI provider.
 
-Example conceptual response:
+It should simulate generation and return something like:
 
 ```json
 {
-  "status": "pending",
-  "reportId": "..."
+  "result": "Generated response",
+  "usage": {
+    "apiCalls": 1,
+    "inputTokens": 100,
+    "cachedInputTokens": 20,
+    "outputTokens": 80,
+    "reasoningTokens": 30,
+    "costMicros": 1234
+  }
 }
 ```
 
-Do not expose internal implementation details.
+The endpoint must:
 
-If a report is already pending, avoid creating duplicate jobs unnecessarily.
-
-If a completed report already exists, decide on a sensible idempotent behavior rather than blindly generating duplicate PDFs.
+* authenticate via API key
+* resolve tenant
+* check quota
+* require Idempotency-Key
+* calculate usage
+* calculate cost
+* create exactly one UsageEvent
+* return the result
 
 ---
 
-# GET `/applications/:id/report`
+# 11. AUTHENTICATION
 
-Requirements:
+Implement two authentication modes where appropriate.
 
-* Requires authentication.
-* Verify application ownership.
-* Return:
+## Dashboard authentication
 
-### Pending
+JWT:
 
-```json
-{
-  "status": "pending"
-}
+```http
+Authorization: Bearer <JWT>
 ```
 
-### Done
+Used by the React dashboard.
 
-```json
-{
-  "status": "done",
-  "reportId": "...",
-  "url": "..."
-}
+## API authentication
+
+API key:
+
+```http
+Authorization: Bearer mf_live_xxxxx
 ```
 
-### Failed
+Used by `/generate` and other customer-facing API endpoints.
 
-```json
-{
-  "status": "failed",
-  "error": "..."
-}
-```
+API keys must:
 
-Do not expose stack traces, filesystem internals, API keys, or other sensitive information.
+* be cryptographically random
+* only show the full key once
+* store only a secure hash
+* support revocation
+* belong to exactly one tenant
+* never allow cross-tenant access
 
 ---
 
-# PDF Content
+# 12. STRIPE CHECKOUT
 
-The PDF should represent the tailored job application information.
+Implement Stripe Test Mode.
 
-At minimum include useful information such as:
+Flow:
 
-* Candidate/application context
-* Company
-* Role
-* Job URL if available
-* Tailored resume information
-* Tailored bullets/content generated by the LLM
-* Any other structured information already available in `TailoredResume`
+```text
+Dashboard
+   ↓
+Upgrade to Pro
+   ↓
+Backend creates Stripe Checkout Session
+   ↓
+Stripe Checkout
+   ↓
+Successful payment
+   ↓
+Stripe webhook
+   ↓
+Signature verification
+   ↓
+Webhook deduplication
+   ↓
+Database subscription update
+```
 
-Do not invent information that is not present in the database.
+Do not trust the frontend to mark a user as Pro.
 
-Create a clean printable HTML document before converting it to PDF.
+The backend/database subscription state must be updated from verified Stripe webhook events.
 
-The output should look like an actual report/resume document rather than raw JSON.
+Implement the relevant subscription lifecycle events, such as:
+
+* checkout completion
+* subscription created
+* subscription updated
+* subscription deleted/canceled
+
+Use environment variables for Stripe secrets and IDs.
+
+NEVER commit Stripe secrets.
 
 ---
 
-# File Storage
+# 13. STRIPE WEBHOOK SECURITY
 
-For the MVP, local filesystem storage is acceptable if that matches the existing project architecture.
+Webhook endpoint:
+
+```http
+POST /webhooks/stripe
+```
+
+Stripe signature verification is mandatory.
+
+The raw request body must be preserved as required by Stripe signature verification.
+
+Invalid signatures must return:
+
+```http
+400
+```
+
+Do not parse/modify the body before signature verification if that would break Stripe verification.
+
+Webhook events must be deduplicated using a database uniqueness constraint on the Stripe event ID.
+
+If the same event arrives twice:
+
+* do not perform the business action twice
+* do not create duplicate subscriptions/records
+* return a successful response where appropriate
+
+Add tests for:
+
+* valid signature
+* invalid signature
+* missing signature
+* duplicate event
+* subscription activation
+* subscription update
+* subscription cancellation
+
+---
+
+# 14. STRICT TENANT ISOLATION
+
+This is mandatory.
+
+Tenant A must NEVER be able to access:
+
+* Tenant B users
+* Tenant B applications/data
+* Tenant B usage
+* Tenant B subscription
+* Tenant B API keys
+* Tenant B billing information
+
+Every relevant query must be tenant-scoped.
+
+Add integration tests proving:
+
+```text
+Tenant A cannot read Tenant B data
+Tenant A cannot mutate Tenant B data
+Tenant A cannot use Tenant B API keys
+Tenant A cannot affect Tenant B quota
+Tenant A cannot see Tenant B usage
+```
+
+Do not rely only on frontend restrictions.
+
+Enforce isolation in backend/database access logic.
+
+---
+
+# 15. API DESIGN
+
+Create clean REST endpoints.
+
+At minimum consider:
+
+## Authentication
+
+```text
+POST /auth/signup
+POST /auth/login
+GET  /auth/me
+```
+
+## Dashboard
+
+```text
+GET /usage
+GET /usage/summary
+GET /subscription
+```
+
+## API Keys
+
+```text
+GET    /api-keys
+POST   /api-keys
+DELETE /api-keys/:id
+```
+
+## Billing
+
+```text
+POST /billing/checkout
+GET  /billing/subscription
+POST /webhooks/stripe
+```
+
+## Metering
+
+```text
+POST /generate
+```
+
+Keep naming consistent.
+
+Return predictable JSON responses.
+
+Validate all user-controlled input.
+
+---
+
+# 16. DASHBOARD
+
+Build a polished React/Vite dashboard.
+
+The dashboard should look like a real SaaS product, not a raw admin page.
+
+Required areas:
+
+## Overview
+
+Show:
+
+* current plan
+* API calls used
+* API call quota
+* AI tokens used
+* AI token quota
+* estimated/current usage cost
+* subscription status
+* billing period
+* recent usage
+
+Use progress indicators/cards.
+
+## Usage
+
+Show:
+
+* API calls
+* AI tokens
+* cost
+* usage history
+* recent events
+
+A simple chart is encouraged.
+
+## Billing
+
+Show:
+
+* Free/Pro
+* current subscription
+* limits
+* Stripe billing state
+* Upgrade to Pro button
+
+## API Keys
+
+Show:
+
+* key name
+* prefix
+* creation date
+* last used
+* revoked status
+* create key
+* revoke key
+
+When creating a key, display the full key ONCE with a clear warning that it cannot be retrieved later.
+
+## API Documentation
+
+Add a simple developer documentation page explaining:
+
+```text
+POST /generate
+Authorization
+Idempotency-Key
+Request body
+Response
+Quota behavior
+```
+
+Include an example request/response.
+
+---
+
+# 17. UI QUALITY
+
+The dashboard must be:
+
+* responsive
+* clean
+* modern
+* accessible
+* mobile-friendly
+* consistent
+* readable
+
+Handle:
+
+* loading states
+* empty states
+* errors
+* success states
+* unauthorized state
+* expired JWT
+* revoked API key
+* quota exceeded
+* Stripe checkout errors
+
+Do not introduce a huge UI dependency unless necessary.
+
+---
+
+# 18. SECURITY
+
+Apply reasonable production-style security:
+
+* password hashing
+* JWT validation
+* secure API key generation
+* API key hashing
+* input validation
+* tenant authorization
+* Helmet
+* sensible CORS
+* rate limiting where appropriate
+* no secrets in source control
+* no secrets in frontend environment variables
+* no sensitive data in logs
+
+Never log:
+
+* passwords
+* JWTs
+* raw API keys
+* Stripe secret keys
+
+---
+
+# 19. DATABASE DESIGN
+
+Use Prisma migrations.
+
+The final repository MUST contain the migration files necessary to recreate the database from scratch.
+
+Verify:
+
+```bash
+npx prisma migrate deploy
+```
+
+works on a clean database.
+
+Do not rely on an already-existing local database.
+
+Seed the two plans if appropriate.
+
+A fresh developer should be able to clone the repository and initialize the system.
+
+---
+
+# 20. DOCKER
+
+Provide a simple Docker Compose setup for PostgreSQL and any necessary services.
+
+The project should be easy to start locally.
+
+Example:
+
+```bash
+docker compose up -d
+```
+
+Then:
+
+```bash
+npm install
+npx prisma migrate deploy
+npm run dev
+```
+
+Document exact commands based on the actual implementation.
+
+Do not document commands that do not work.
+
+---
+
+# 21. TESTING
+
+Testing is mandatory.
+
+Create a strong automated test suite.
+
+Test at minimum:
+
+### Authentication
+
+* signup
+* login
+* invalid credentials
+* protected routes
+
+### Tenant isolation
+
+* cross-tenant read
+* cross-tenant mutation
+* cross-tenant API key usage
+
+### Idempotency
+
+* first request
+* retry
+* duplicate key
+* concurrent requests
+
+### Quotas
+
+* within limit
+* exact limit
+* over limit
+* concurrent requests
+* Free plan
+* Pro plan
+
+### Pricing
+
+* all token categories
+* cached tokens
+* reasoning tokens
+* mixed usage
+* integer precision
+
+### API Keys
+
+* creation
+* hashing
+* authentication
+* revocation
+* invalid key
+
+### Stripe
+
+* valid webhook
+* invalid signature
+* duplicate webhook
+* subscription creation/update/deletion
+
+### Generate
+
+* successful billable request
+* usage event created
+* cost calculated
+* idempotent retry
+* quota enforcement
+
+Run the full suite before declaring completion.
+
+---
+
+# 22. CAPSTONE DELIVERABLES
+
+The repository root MUST contain:
+
+```text
+README.md
+capstone.yaml
+.env.example
+BUILDLOG.md
+EVIDENCE.md
+```
+
+## README.md
+
+Include:
+
+* project overview
+* architecture diagram
+* tech stack
+* database model
+* API overview
+* local setup
+* Docker setup
+* Prisma migration setup
+* Stripe Test Mode setup
+* Stripe CLI webhook setup
+* environment variables
+* how to run backend
+* how to run frontend
+* how to run tests
+* example `/generate` request
+* idempotency explanation
+* quota explanation
+* pricing explanation
+* webhook explanation
+* security/tenant isolation explanation
+
+The architecture diagram can be Mermaid if appropriate.
+
+## capstone.yaml
+
+Create a clear evaluator manifest mapping the mandatory requirements to the relevant implementation/test evidence.
+
+## BUILDLOG.md
+
+Document AI assistance transparently.
+
+Include:
+
+* what AI tools were used
+* what they helped with
+* important implementation decisions
+* debugging
+* testing
+* human verification
+
+Do not falsely claim that AI did things that were not actually done.
+
+## EVIDENCE.md
+
+This is extremely important.
+
+Create a requirement-by-requirement verification document.
+
+For every mandatory requirement include:
+
+```text
+Requirement
+Implementation
+Relevant files
+Relevant API/test
+How to verify
+Expected result
+```
 
 For example:
 
 ```text
-backend/reports/
+Idempotent Metering
+Implementation:
+UsageEvent.idempotencyKey has a unique database constraint.
+
+Verification:
+POST /generate with the same Idempotency-Key twice.
+
+Expected:
+Exactly one UsageEvent exists.
+The second request does not double-count usage.
 ```
 
-Make sure generated files are not accidentally committed to Git.
+---
 
-Add the appropriate directory to `.gitignore` if necessary.
+# 23. CAPSTONE CONTRACT FIRST
 
-Do not expose arbitrary filesystem paths to clients.
+Before adding optional features, create a checklist:
 
-If using local storage, expose the PDF through a controlled authenticated endpoint or another safe mechanism.
+```text
+[ ] PostgreSQL
+[ ] Docker
+[ ] Tenant model
+[ ] Plan model
+[ ] Subscription model
+[ ] UsageEvent model
+[ ] API calls metering
+[ ] AI token metering
+[ ] Idempotency
+[ ] Database-level idempotency protection
+[ ] Quota enforcement
+[ ] 429/402 behavior
+[ ] Integer financial values
+[ ] Cached input pricing
+[ ] Reasoning token pricing
+[ ] Stripe Checkout
+[ ] Stripe webhooks
+[ ] Webhook signature verification
+[ ] Webhook deduplication
+[ ] Tenant isolation
+[ ] /generate
+[ ] README
+[ ] capstone.yaml
+[ ] BUILDLOG.md
+[ ] EVIDENCE.md
+[ ] Tests
+```
 
-Do not return a raw absolute Windows filesystem path.
+Do not move to stretch features until every item above is implemented and verified.
 
 ---
 
-# Background Job Behavior
+# 24. OPTIONAL FEATURES — ONLY AFTER CORE IS COMPLETE
 
-The job must:
+Once the mandatory contract is 100% complete, you MAY add:
 
-1. Receive the report/application identifier.
-2. Load the necessary database records.
-3. Verify the application/report still exists.
-4. Generate the HTML.
-5. Launch/use Playwright.
-6. Generate the PDF.
-7. Store the PDF.
-8. Mark the report `DONE`.
+* usage alerts
+* invoices
+* overage billing
+* proration
+* nightly reconciliation
+* richer analytics
+* billing history
+* downloadable usage reports
 
-If anything fails:
+Do not implement these if they introduce unnecessary risk.
 
-1. Catch the error.
-2. Log useful server-side diagnostic information.
-3. Mark the report `FAILED`.
-4. Store a safe user-facing error message.
-
-Avoid leaving reports permanently stuck in `PENDING`.
+Prioritize stability.
 
 ---
 
-# Concurrency / Duplicate Jobs
+# 25. ENGINEERING PRINCIPLES
 
-Think carefully about race conditions.
+Follow these rules:
 
-Multiple requests for the same application should not unnecessarily generate multiple reports simultaneously.
-
-Use the database state to prevent duplicate pending work where practical.
-
-Do not use a fragile polling loop or `setInterval` implementation.
-
-The background job should have a clear lifecycle.
-
----
-
-# Tests
-
-This is important.
-
-Add focused tests for the new behavior.
-
-At minimum cover:
-
-### API
-
-* Unauthenticated user cannot request a report.
-* User cannot request a report for another user's application.
-* Valid request returns `202`.
-* Report starts in `PENDING`.
-* GET report returns `pending`.
-* GET report returns `done` after successful generation.
-* GET report returns `failed` after job failure.
-* User cannot access another user's report.
-
-### Background job
-
-Test the job logic independently where practical.
-
-Mock Playwright/browser operations rather than requiring a real browser in every unit test.
-
-Verify:
-
-* Successful generation creates/stores the PDF and marks the report `DONE`.
-* Generation failure marks the report `FAILED`.
-* Failure does not leave the report stuck in `PENDING`.
-
-### Regression
-
-Run the entire existing backend test suite.
-
-Do not weaken or delete existing tests.
+* Keep modules small and focused.
+* Separate business logic from HTTP controllers.
+* Keep pricing logic independently testable.
+* Keep quota logic independently testable.
+* Keep Stripe integration isolated.
+* Keep webhook handling isolated.
+* Use transactions where atomicity matters.
+* Use database constraints to enforce invariants.
+* Avoid duplicated logic.
+* Avoid unnecessary abstractions.
+* Avoid overengineering.
+* Prefer explicit code over clever code.
+* Never silently swallow errors.
+* Return useful error messages.
+* Preserve existing working functionality.
 
 ---
 
-# Verification
+# 26. VERIFICATION REQUIREMENT
 
-After implementation:
+Before saying the project is complete, actually run:
 
-1. Run the existing tests.
-2. Run the new tests.
-3. Run Prisma validation/generation if schema changed.
-4. Verify migrations.
-5. Start the backend.
-6. Perform a real manual API smoke test if possible:
+```bash
+npm test
+```
 
-   * login
-   * create/use an application
-   * ensure it has a TailoredResume
-   * POST `/applications/:id/report`
-   * confirm `202`
-   * GET `/applications/:id/report`
-   * confirm transition from `pending` to `done`
-   * verify the resulting PDF opens correctly.
+and relevant build commands.
 
-If Playwright/browser installation requires a separate setup step, document the exact command.
+Also verify:
 
----
+```bash
+npx prisma validate
+npx prisma migrate deploy
+```
 
-# Git Safety
+against a clean/test database where practical.
 
-Do not commit generated PDFs.
+Verify frontend production build.
 
-Do not commit:
+Perform a manual smoke test:
 
-* `.env`
-* API keys
-* database credentials
-* generated report files
-* `node_modules`
+```text
+Signup
+↓
+Login
+↓
+Dashboard
+↓
+Create API key
+↓
+Call /generate
+↓
+Usage increases
+↓
+Repeat same Idempotency-Key
+↓
+Usage does NOT increase twice
+↓
+View usage
+↓
+Upgrade to Pro through Stripe Test Mode
+↓
+Webhook received
+↓
+Subscription becomes Pro
+```
 
-Preserve the existing `.gitignore`.
-
-Do not create a second Git repository.
-
----
-
-# Scope Restrictions
-
-For this task:
-
-DO:
-
-* Async PDF report generation
-* Background job
-* Report persistence/status
-* PDF generation
-* Required API endpoints
-* Required tests
-* Minimal schema changes if necessary
-
-DO NOT:
-
-* Redesign the frontend
-* Add Tailwind
-* Add Edit/Delete UI
-* Rewrite authentication
-* Rewrite the OpenAI integration
-* Add unrelated features
-* Refactor large portions of the existing codebase
-* Introduce unnecessary infrastructure
+If Stripe CLI is available, document and test the actual webhook flow.
 
 ---
 
-# Final Report
+# 27. FINAL AUDIT
 
-When finished, provide:
+At the end, do NOT simply say "done".
 
-1. Exact files changed.
-2. Database/schema changes.
-3. Background-job architecture chosen and why.
-4. PDF generation approach.
-5. API endpoints added.
-6. Tests added.
-7. Exact test commands and results.
-8. Manual smoke-test result.
-9. Any setup commands required.
-10. Any remaining limitations.
+Produce a final engineering audit containing:
 
-Most importantly, keep the implementation aligned with the existing capstone architecture instead of creating a new application inside the application.
+## Implementation Summary
+
+What was implemented.
+
+## Files Changed
+
+List important files and what changed.
+
+## Database
+
+Explain models, constraints, and migrations.
+
+## API
+
+List important endpoints.
+
+## Security
+
+Explain authentication, API keys, tenant isolation, webhook verification, etc.
+
+## Billing
+
+Explain Stripe Checkout and webhook synchronization.
+
+## Metering
+
+Explain idempotency, quota enforcement, and usage tracking.
+
+## Pricing
+
+Explain token pricing and integer arithmetic.
+
+## Tests
+
+Give the actual test command and actual result.
+
+Example:
+
+```text
+Tests: 87
+Passed: 87
+Failed: 0
+```
+
+Never fabricate test results.
+
+## Manual Verification
+
+List what was actually tested manually.
+
+## Remaining Issues
+
+Be honest.
+
+If something could not be tested because Stripe credentials/CLI/database/etc. are unavailable, explicitly say so.
+
+---
+
+# 28. IMPORTANT: DO NOT FAKE SUCCESS
+
+This is critical.
+
+Never claim:
+
+* tests pass if you didn't run them
+* Stripe works if you didn't verify it
+* webhooks are secure if signature verification wasn't tested
+* migrations work if you didn't test them
+* tenant isolation works if it wasn't tested
+
+If something is blocked by environment limitations, report it clearly and provide the exact command/action needed to finish verification.
+
+---
+
+# 29. IMPLEMENTATION ORDER
+
+Follow this order:
+
+### Phase 1
+
+Repository audit + architecture
+
+### Phase 2
+
+Database schema + migrations + seed
+
+### Phase 3
+
+Authentication + tenant isolation
+
+### Phase 4
+
+API key system
+
+### Phase 5
+
+Usage/metering engine
+
+### Phase 6
+
+Idempotency + quota enforcement
+
+### Phase 7
+
+Pricing engine
+
+### Phase 8
+
+`POST /generate`
+
+### Phase 9
+
+Stripe Checkout
+
+### Phase 10
+
+Stripe webhooks + signature verification + deduplication
+
+### Phase 11
+
+Automated tests
+
+### Phase 12
+
+React dashboard
+
+### Phase 13
+
+API documentation page
+
+### Phase 14
+
+README / capstone.yaml / BUILDLOG.md / EVIDENCE.md
+
+### Phase 15
+
+Full audit + final verification
+
+---
+
+# 30. START NOW
+
+Start by inspecting the repository.
+
+Do NOT immediately rewrite files.
+
+First:
+
+1. inspect the existing project
+2. identify what already exists
+3. identify missing requirements
+4. provide a concise implementation plan
+5. then begin implementation
+
+Work directly in the repository.
+
+Keep the implementation production-quality but appropriately scoped for a capstone.
+
+The final goal is:
+
+**A fully functional, secure, tested, multi-tenant Usage Metering & Billing SaaS with Stripe Test Mode, not merely a collection of demo endpoints.**

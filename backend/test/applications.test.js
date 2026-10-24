@@ -1,4 +1,4 @@
-import test from "node:test";
+import baseTest from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app.js";
 import { createPrismaClient } from "../src/db.js";
@@ -8,10 +8,14 @@ import { createPrismaClient } from "../src/db.js";
 // a local jobhunt_test database; override it in CI as needed. Run
 // `npx prisma migrate dev` (or `db push`) against that database
 // before running these tests, same as any other Prisma project.
-const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL || "postgresql://postgres:2372003@localhost:5432/jobhunt_db";
+// No default: these tests create and delete rows, so they must never fall
+// back to a dev database. Set TEST_DATABASE_URL to a dedicated test DB
+// (e.g. postgresql://USER:PASS@localhost:5432/jobhunt_test); otherwise the
+// DB-backed tests are skipped, loudly, instead of touching real data.
+const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
+const test = (name, fn) => baseTest(name, { skip: !TEST_DATABASE_URL && "TEST_DATABASE_URL is not set" }, fn);
 
-process.env.JWT_SECRET = process.env.JWT_SECRET ||"1R.=hS-d:|2LIna>>,}:sp";
+process.env.JWT_SECRET = process.env.JWT_SECRET || "test-only-secret-not-for-production";
 
 async function request(app, method, urlPath, body, token) {
   return new Promise((resolve, reject) => {

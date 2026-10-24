@@ -248,6 +248,9 @@ res.setHeader(
 
       return res.status(201).json({
         bullets: outcome.bullets,
+        // Per-bullet result of the deterministic factual-consistency check:
+        // "accepted", or "reverted_to_original" with the specific issues.
+        grounding: outcome.grounding,
         usage: { model: outcome.model, promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens, costUsd: outcome.costUsd },
       });
     } catch (err) {

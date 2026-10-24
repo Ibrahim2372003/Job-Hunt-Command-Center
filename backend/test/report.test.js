@@ -1,4 +1,5 @@
-import test from "node:test";
+import baseTest from "node:test";
+const test = baseTest;
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -7,9 +8,11 @@ import { buildApplicationReportHtml } from "../src/report.js";
 import { runReportGeneration } from "../src/inngest/functions/generateApplicationReport.js";
 import { REPORTS_DIR } from "../src/paths.js";
 
-const TEST_DATABASE_URL =
-  process.env.TEST_DATABASE_URL || "postgresql://postgres:2372003@localhost:5432/jobhunt_db";
-
+// No default: see applications.test.js. Pure buildApplicationReportHtml
+// tests below run without a DB; the Prisma-backed ones skip when unset.
+const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
+const dbTest = (name, fn) =>
+  baseTest(name, { skip: !TEST_DATABASE_URL && "TEST_DATABASE_URL is not set" }, fn);
 mkdirSync(REPORTS_DIR, { recursive: true });
 
 // --- buildApplicationReportHtml: pure, no Playwright, no DB ---
@@ -73,7 +76,7 @@ async function setUpApplicationWithTailoring(prisma) {
   return { user, application };
 }
 
-test("runReportGeneration: turns a pending report into a done report with a real file on disk", async () => {
+dbTest("runReportGeneration: turns a pending report into a done report with a real file on disk", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   await prisma.report.deleteMany();
   await prisma.tailoredResume.deleteMany();
@@ -99,7 +102,7 @@ test("runReportGeneration: turns a pending report into a done report with a real
   await prisma.$disconnect();
 });
 
-test("runReportGeneration: the rendered HTML actually reflects the real tailored bullets, not a mock of the whole pipeline", async () => {
+dbTest("runReportGeneration: the rendered HTML actually reflects the real tailored bullets, not a mock of the whole pipeline", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   await prisma.report.deleteMany();
   await prisma.tailoredResume.deleteMany();
@@ -126,7 +129,7 @@ test("runReportGeneration: the rendered HTML actually reflects the real tailored
   await prisma.$disconnect();
 });
 
-test("runReportGeneration: idempotent — a report already marked DONE is not re-rendered", async () => {
+dbTest("runReportGeneration: idempotent — a report already marked DONE is not re-rendered", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   await prisma.report.deleteMany();
   await prisma.tailoredResume.deleteMany();
@@ -144,7 +147,7 @@ test("runReportGeneration: idempotent — a report already marked DONE is not re
   await prisma.$disconnect();
 });
 
-test("runReportGeneration: no valid tailored resume — throws, report is left for the caller to mark FAILED", async () => {
+dbTest("runReportGeneration: no valid tailored resume — throws, report is left for the caller to mark FAILED", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   await prisma.report.deleteMany();
   await prisma.tailoredResume.deleteMany();
@@ -167,7 +170,7 @@ test("runReportGeneration: no valid tailored resume — throws, report is left f
   await prisma.$disconnect();
 });
 
-test("runReportGeneration: a render failure leaves the report PENDING (not silently DONE), for the caller to mark FAILED", async () => {
+dbTest("runReportGeneration: a render failure leaves the report PENDING (not silently DONE), for the caller to mark FAILED", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   await prisma.report.deleteMany();
   await prisma.tailoredResume.deleteMany();
@@ -190,7 +193,7 @@ test("runReportGeneration: a render failure leaves the report PENDING (not silen
   await prisma.$disconnect();
 });
 
-test("runReportGeneration: throws a clear error for a report id with no reserved row", async () => {
+dbTest("runReportGeneration: throws a clear error for a report id with no reserved row", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
   await assert.rejects(() => runReportGeneration({ prisma, reportId: "00000000-0000-0000-0000-000000000000", renderFn: stubRender }), /No report row for id/);
   await prisma.$disconnect();
