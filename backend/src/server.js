@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { pathToFileURL } from "node:url";
 import { createApp } from "./app.js";
 import { createPrismaClient } from "./db.js";
