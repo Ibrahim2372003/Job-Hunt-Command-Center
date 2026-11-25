@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseTailoredBullets, computeCostUsd, tailorBullets, TailorOutputError } from "../src/llm.js";
+import { parseTailoredBullets, computeCostUsd, DEFAULT_MODEL, tailorBullets, TailorOutputError } from "../src/llm.js";
 
 test("parseTailoredBullets: valid JSON array of strings passes and trims", () => {
   const result = parseTailoredBullets('["  Built X.  ", "Led Y."]');
@@ -71,7 +71,7 @@ test("tailorBullets: with a stub client, returns bullets + usage + cost on valid
   const result = await tailorBullets(client, { jobDescription: "A backend role.", baseBullets: ["Did a thing."] });
 
   assert.deepEqual(result.bullets, ["Tailored bullet one."]);
-  assert.equal(result.model, "gpt-5.6-luna");
+  assert.equal(result.model, DEFAULT_MODEL);
   assert.equal(result.promptTokens, 100);
   assert.equal(result.completionTokens, 50);
   assert.ok(result.costUsd > 0);
