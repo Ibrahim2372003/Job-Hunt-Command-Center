@@ -1,5 +1,5 @@
 import express from "express";
-import OpenAI from "openai";
+import { createGeminiClient } from "./gemini.js";
 import { mkdirSync } from "node:fs";
 import { serve } from "inngest/express";
 import { validateApplicationInput, validateSignupInput, validateLoginInput, validateTailorInput } from "./validation.js";
@@ -15,7 +15,7 @@ import { REPORTS_DIR } from "./paths.js";
  * pattern as everything else here. Unlike Prisma and the earlier
  * Anthropic SDK, the official `openai` SDK throws immediately at
  * construction if no API key is present (confirmed by actually
- * running `new OpenAI()` with no key set) — so `openaiClient` is
+ * running `createGeminiClient()` with no key set) — so `openaiClient` is
  * NOT constructed via a default parameter (that would crash the
  * whole server at startup, even for routes that never touch OpenAI,
  * if `OPENAI_API_KEY` isn't set yet). Instead it's constructed lazily,
@@ -229,7 +229,7 @@ res.setHeader(
     }
 
     try {
-      const client = openaiClient ?? new OpenAI();
+      const client = openaiClient ?? createGeminiClient();
       const outcome = await tailorBullets(client, {
         jobDescription: application.jobDescription,
         baseBullets: result.data.baseBullets,

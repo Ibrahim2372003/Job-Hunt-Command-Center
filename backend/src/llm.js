@@ -1,7 +1,7 @@
 import { enforceGrounding } from "./grounding.js";
 import { fenceUntrusted, UNTRUSTED_DATA_NOTICE } from "./promptSafety.js";
 
-export const DEFAULT_MODEL = "gpt-5.6-luna";
+export const DEFAULT_MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 
 // Per-request options passed as the SDK's second argument. A bounded
 // timeout keeps a hung provider from tying up an HTTP request forever;
@@ -23,6 +23,8 @@ export const REQUEST_OPTIONS = { timeout: 45_000, maxRetries: 1 };
 // periodically (this model's own rate changed 80% on July 30, 2026).
 const PRICING_PER_MILLION_TOKENS = {
   "gpt-5.6-luna": { input: 0.2, output: 1.2 },
+  // Gemini: the free tier is not billed; this logs the paid-tier rate ($0.30 in / $2.50 out per 1M) as an estimate of what usage would cost.
+  "gemini-3.5-flash-lite": { input: 0.3, output: 2.5 },
 };
 
 const MAX_BULLETS_OUT = 20;
