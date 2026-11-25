@@ -30,6 +30,19 @@ test("gemini client: sends schema without additionalProperties and maps usage", 
 
 test("gemini client: missing key and API errors throw", async () => {
   await assert.rejects(createGeminiClient({ apiKey: "" }).responses.create({ model: "m", instructions: "", input: "" }), /GEMINI_API_KEY/);
-  const bad = createGeminiClient({ apiKey: "k", fetchImpl: async () => ({ ok: false, status: 429, text: async () => "quota" }) });
+  const bad = createGeminiClient({ apiKey: "k", fetchImpl: async () => ({ ok: false, status: 429, text: async () => "quota" }), retryDelayMs: 1 });
   await assert.rejects(bad.responses.create({ model: "m", instructions: "", input: "" }), /429/);
+});
+
+test("gemini client: retries a 503 and then succeeds", async () => {
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls++;
+    if (calls < 3) return { ok: false, status: 503, text: async () => "busy" };
+    return { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ text: "{}" }] } }] }) };
+  };
+  const client = createGeminiClient({ apiKey: "k", fetchImpl, retryDelayMs: 1 });
+  const out = await client.responses.create({ model: "m", instructions: "", input: "" });
+  assert.equal(out.output_text, "{}");
+  assert.equal(calls, 3);
 });
