@@ -19,7 +19,9 @@ function toGeminiSchema(schema) {
   return schema;
 }
 
-export function createGeminiClient({ apiKey = process.env.GEMINI_API_KEY, fetchImpl = fetch } = {}) {
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+export function createGeminiClient({ apiKey = process.env.GEMINI_API_KEY, fetchImpl = fetch, retryDelayMs = 1500 } = {}) {
   return {
     responses: {
       async create({ model, instructions, input, text }, options = {}) {
@@ -30,16 +32,24 @@ export function createGeminiClient({ apiKey = process.env.GEMINI_API_KEY, fetchI
         const schema = text?.format?.schema;
         if (schema) generationConfig.responseSchema = toGeminiSchema(schema);
 
-        const res = await fetchImpl(`${API_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: instructions }] },
-            contents: [{ role: "user", parts: [{ text: input }] }],
-            generationConfig,
-          }),
-          signal: AbortSignal.timeout(options.timeout ?? 45_000),
+        const body = JSON.stringify({
+          systemInstruction: { parts: [{ text: instructions }] },
+          contents: [{ role: "user", parts: [{ text: input }] }],
+          generationConfig,
         });
+
+        // The free tier answers 429/503 now and then. Retry those a couple of times.
+        let res;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          res = await fetchImpl(`${API_BASE}/models/${encodeURIComponent(model)}:generateContent`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+            body,
+            signal: AbortSignal.timeout(options.timeout ?? 45_000),
+          });
+          if (res.ok || ![429, 500, 502, 503, 504].includes(res.status) || attempt === 2) break;
+          await sleep(retryDelayMs * (attempt + 1));
+        }
 
         if (!res.ok) {
           const detail = (await res.text()).slice(0, 300);
