@@ -1,12 +1,11 @@
 import express from "express";
 import { createGeminiClient } from "./gemini.js";
 import { mkdirSync } from "node:fs";
-import { serve } from "inngest/express";
 import { validateApplicationInput, validateSignupInput, validateLoginInput, validateTailorInput } from "./validation.js";
 import { hashPassword, verifyPassword, signToken, requireAuth } from "./auth.js";
 import { tailorBullets, TailorOutputError } from "./llm.js";
-import { inngest } from "./inngest/client.js";
-import { createGenerateApplicationReportFunction } from "./inngest/functions/generateApplicationReport.js";
+import { existsSync } from "node:fs";
+import { createLocalJobClient, regenerateReportFile } from "./reportJob.js";
 import { REPORTS_DIR } from "./paths.js";
 
 /**
@@ -23,16 +22,20 @@ import { REPORTS_DIR } from "./paths.js";
  * that route is hit without an injected client. Tests always inject a
  * stub, so this only matters for the real server.
  *
- * `inngestClient` and `renderFn` follow the same injection pattern as
- * the pdf-report-generator project: real Inngest client + real
- * Playwright renderer by default, swappable in tests.
+ * `jobClient` and `renderFn` follow the same injection pattern as
+ * the pdf-report-generator project: the real in-process dispatcher +
+ * real pdfkit renderer by default, swappable in tests. The dispatcher
+ * keeps the exact `send({ name, data })` shape the Inngest client had
+ * (Inngest was dropped: it needs a hosted account and signing keys to
+ * deliver events in production, so on the free Render deploy every
+ * send failed and reports never ran).
  */
-export function createApp({ prisma, openaiClient, inngestClient = inngest, renderFn }) {
+export function createApp({ prisma, openaiClient, jobClient, renderFn }) {
   const app = express();
   app.use(express.json());
   mkdirSync(REPORTS_DIR, { recursive: true });
 
-  const generateApplicationReport = createGenerateApplicationReportFunction({ prisma, renderFn });
+  const dispatcher = jobClient ?? createLocalJobClient({ prisma, renderFn });
 
   // Minimal, hand-rolled CORS — this is a local dev SPA on a
   // different port, not a public API with real cross-origin
@@ -319,8 +322,17 @@ res.setHeader(
 
       if (report) {
         if (report.status === "PENDING") {
-          // Already in progress — don't enqueue a second job.
-          return res.status(202).json({ status: "pending", reportId: report.id });
+          // Already in progress — don't dispatch a second job. But a
+          // PENDING row can also be orphaned: the render runs in this
+          // same process, so an instance restart (a redeploy, or
+          // Render's free tier sleeping) kills it mid-flight and
+          // leaves the row PENDING forever. Past a short grace period
+          // treat the row as stale and fall through to re-dispatch.
+          const STALE_PENDING_MS = 2 * 60 * 1000;
+          if (Date.now() - new Date(report.updatedAt).getTime() < STALE_PENDING_MS) {
+            return res.status(202).json({ status: "pending", reportId: report.id });
+          }
+          report = await prisma.report.update({ where: { id: report.id }, data: { error: null } });
         }
         if (report.status === "DONE") {
           // Idempotent: a completed report already exists, so this
@@ -345,7 +357,7 @@ res.setHeader(
         }
       }
 
-      await inngestClient.send({ name: "report/requested", data: { reportId: report.id } });
+      await dispatcher.send({ name: "report/requested", data: { reportId: report.id } });
 
       return res.status(202).json({ status: "pending", reportId: report.id });
     } catch (err) {
@@ -396,10 +408,21 @@ res.setHeader(
       return res.status(409).json({ error: "not_ready", message: "The report is not ready yet." });
     }
 
+    // Render's free-tier disk is ephemeral: after a sleep or redeploy
+    // the DB still says DONE but the file is gone. Re-render it on
+    // the spot (pdfkit takes well under a second) instead of
+    // erroring on a report the user can see is "done".
+    if (!existsSync(report.filePath)) {
+      try {
+        await regenerateReportFile({ prisma, report, renderFn });
+      } catch (err) {
+        console.error("GET /applications/:id/report/file failed (regenerate):", err.message);
+        return res.status(409).json({ error: "not_ready", message: "The report is being regenerated. Please try again in a moment." });
+      }
+    }
+
     return res.sendFile(report.filePath);
   });
-
-  app.use("/api/inngest", serve({ client: inngestClient, functions: [generateApplicationReport] }));
 
   return app;
 }

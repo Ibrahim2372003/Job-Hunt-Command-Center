@@ -61,13 +61,13 @@ function makeStubOpenaiClient(outputText = '{"bullets": ["Tailored bullet one."]
   };
 }
 
-// Stub Inngest client — captures sent events instead of making a real
-// call or requiring a real Inngest dev server, same pattern used for
+// Stub job client — captures sent events instead of making a real
+// call or requiring a real dispatcher, same pattern used for
 // pdf-report-generator's server.test.js. Report generation tests
 // exercise the actual work via runReportGeneration() directly (see
 // report.test.js), not through this stub — this one is only for
 // asserting on the HTTP-layer's "did we enqueue, and only once" logic.
-function makeStubInngestClient() {
+function makeStubJobClient() {
   const sent = [];
   return {
     sent,
@@ -409,7 +409,7 @@ test("POST /applications/:id/tailor: a hard OpenAI request failure logs nothing 
 
 test("POST /applications/:id/report: without a token is rejected with 401", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
 
   const res = await request(app, "POST", "/applications/some-id/report");
 
@@ -423,8 +423,8 @@ test("POST /applications/:id/report: user B cannot request a report for user A's
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const inngestClient = makeStubInngestClient();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient });
+  const jobClient = makeStubJobClient();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient });
 
   const tokenA = await signUpAndGetToken(app, "alice");
   const tokenB = await signUpAndGetToken(app, "bob");
@@ -433,7 +433,7 @@ test("POST /applications/:id/report: user B cannot request a report for user A's
   const res = await request(app, "POST", `/applications/${application.id}/report`, undefined, tokenB);
 
   assert.equal(res.status, 404, "Bob must get 404, not 403 or 202, for Alice's application");
-  assert.equal(inngestClient.sent.length, 0, "no job should be enqueued for an application Bob doesn't own");
+  assert.equal(jobClient.sent.length, 0, "no job should be enqueued for an application Bob doesn't own");
 
   await prisma.$disconnect();
 });
@@ -444,8 +444,8 @@ test("POST /applications/:id/report: no tailored resume yet returns 400, no job 
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const inngestClient = makeStubInngestClient();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient });
+  const jobClient = makeStubJobClient();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient });
   const token = await signUpAndGetToken(app);
 
   const created = await request(app, "POST", "/applications", { company: "Acme", role: "Engineer", jobDescription: "A role." }, token);
@@ -454,7 +454,7 @@ test("POST /applications/:id/report: no tailored resume yet returns 400, no job 
 
   assert.equal(res.status, 400);
   assert.equal(res.body.error, "no_tailored_resume");
-  assert.equal(inngestClient.sent.length, 0);
+  assert.equal(jobClient.sent.length, 0);
 
   await prisma.$disconnect();
 });
@@ -465,8 +465,8 @@ test("POST /applications/:id/report: valid request returns 202 pending, reserves
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const inngestClient = makeStubInngestClient();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient });
+  const jobClient = makeStubJobClient();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient });
   const token = await signUpAndGetToken(app);
   const application = await createTailoredApplication(app, token);
 
@@ -483,9 +483,9 @@ test("POST /applications/:id/report: valid request returns 202 pending, reserves
   assert.equal(stored.status, "PENDING");
   assert.equal(stored.filePath, null);
 
-  assert.equal(inngestClient.sent.length, 1);
-  assert.equal(inngestClient.sent[0].name, "report/requested");
-  assert.deepEqual(inngestClient.sent[0].data, { reportId: stored.id });
+  assert.equal(jobClient.sent.length, 1);
+  assert.equal(jobClient.sent[0].name, "report/requested");
+  assert.deepEqual(jobClient.sent[0].data, { reportId: stored.id });
 
   await prisma.$disconnect();
 });
@@ -496,8 +496,8 @@ test("POST /applications/:id/report: a second request while pending does not enq
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const inngestClient = makeStubInngestClient();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient });
+  const jobClient = makeStubJobClient();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient });
   const token = await signUpAndGetToken(app);
   const application = await createTailoredApplication(app, token);
 
@@ -507,7 +507,7 @@ test("POST /applications/:id/report: a second request while pending does not enq
   assert.equal(first.status, 202);
   assert.equal(second.status, 202);
   assert.equal(first.body.reportId, second.body.reportId, "both responses reference the same report");
-  assert.equal(inngestClient.sent.length, 1, "only one job should ever have been enqueued");
+  assert.equal(jobClient.sent.length, 1, "only one job should ever have been enqueued");
 
   await prisma.$disconnect();
 });
@@ -518,8 +518,8 @@ test("POST /applications/:id/report: a second request after done returns the exi
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const inngestClient = makeStubInngestClient();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient });
+  const jobClient = makeStubJobClient();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient });
   const token = await signUpAndGetToken(app);
   const application = await createTailoredApplication(app, token);
 
@@ -535,7 +535,7 @@ test("POST /applications/:id/report: a second request after done returns the exi
   assert.equal(second.body.status, "done");
   assert.equal(second.body.reportId, first.body.reportId);
   assert.ok(second.body.url);
-  assert.equal(inngestClient.sent.length, 1, "a done report must not trigger a new job");
+  assert.equal(jobClient.sent.length, 1, "a done report must not trigger a new job");
 
   await prisma.$disconnect();
 });
@@ -546,8 +546,8 @@ test("POST /applications/:id/report: a prior FAILED report does not block a retr
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const inngestClient = makeStubInngestClient();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient });
+  const jobClient = makeStubJobClient();
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient });
   const token = await signUpAndGetToken(app);
   const application = await createTailoredApplication(app, token);
 
@@ -558,7 +558,7 @@ test("POST /applications/:id/report: a prior FAILED report does not block a retr
 
   assert.equal(retry.status, 202, "a retry after a failure must be able to enqueue a new attempt");
   assert.equal(retry.body.reportId, first.body.reportId, "reuses the same Report row (unique per application)");
-  assert.equal(inngestClient.sent.length, 2, "the retry really did enqueue a second job");
+  assert.equal(jobClient.sent.length, 2, "the retry really did enqueue a second job");
 
   const stored = await prisma.report.findUnique({ where: { id: first.body.reportId } });
   assert.equal(stored.status, "PENDING");
@@ -573,7 +573,7 @@ test("GET /applications/:id/report: unknown application (or someone else's) retu
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
 
   const tokenA = await signUpAndGetToken(app, "alice");
   const tokenB = await signUpAndGetToken(app, "bob");
@@ -592,7 +592,7 @@ test("GET /applications/:id/report: no report requested yet returns 404", async 
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const token = await signUpAndGetToken(app);
   const application = await createTailoredApplication(app, token);
 
@@ -608,7 +608,7 @@ test("GET /applications/:id/report: reflects pending, then done (simulating the 
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const token = await signUpAndGetToken(app);
   const application = await createTailoredApplication(app, token);
 
@@ -639,7 +639,7 @@ test("GET /applications/:id/report/file: 409 while pending, 200 with the file on
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const token = await signUpAndGetToken(app);
   const application = await createTailoredApplication(app, token);
   const created = await request(app, "POST", `/applications/${application.id}/report`, undefined, token);
@@ -676,7 +676,7 @@ test("GET /applications/:id/report/file: user B cannot fetch user A's report fil
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const tokenA = await signUpAndGetToken(app, "alice");
   const tokenB = await signUpAndGetToken(app, "bob");
   const application = await createTailoredApplication(app, tokenA);
@@ -693,7 +693,7 @@ test("GET /applications/:id/report/file: user B cannot fetch user A's report fil
 
 test("PATCH /applications/:id: without a token is rejected with 401", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
 
   const res = await request(app, "PATCH", "/applications/some-id", { company: "X", role: "Y", jobDescription: "Z" });
 
@@ -707,7 +707,7 @@ test("PATCH /applications/:id: authenticated owner can update their own applicat
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const token = await signUpAndGetToken(app);
 
   const created = await request(app, "POST", "/applications", { company: "Acme", role: "Engineer", jobDescription: "A role." }, token);
@@ -737,7 +737,7 @@ test("PATCH /applications/:id: user B cannot update user A's application (404)",
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const tokenA = await signUpAndGetToken(app, "alice");
   const tokenB = await signUpAndGetToken(app, "bob");
 
@@ -758,7 +758,7 @@ test("PATCH /applications/:id: invalid input is rejected with 400, existing data
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const token = await signUpAndGetToken(app);
 
   const created = await request(app, "POST", "/applications", { company: "Acme", role: "Engineer", jobDescription: "A role." }, token);
@@ -777,7 +777,7 @@ test("PATCH /applications/:id: invalid input is rejected with 400, existing data
 
 test("DELETE /applications/:id: without a token is rejected with 401", async () => {
   const prisma = createPrismaClient(TEST_DATABASE_URL);
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
 
   const res = await request(app, "DELETE", "/applications/some-id");
 
@@ -791,7 +791,7 @@ test("DELETE /applications/:id: authenticated owner can delete their own applica
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const token = await signUpAndGetToken(app);
 
   const created = await request(app, "POST", "/applications", { company: "Acme", role: "Engineer", jobDescription: "A role." }, token);
@@ -815,7 +815,7 @@ test("DELETE /applications/:id: user B cannot delete user A's application (404),
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const tokenA = await signUpAndGetToken(app, "alice");
   const tokenB = await signUpAndGetToken(app, "bob");
 
@@ -836,7 +836,7 @@ test("DELETE /applications/:id: an application with existing TailoredResume and 
   await prisma.tailoredResume.deleteMany();
   await prisma.application.deleteMany();
   await prisma.user.deleteMany();
-  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), inngestClient: makeStubInngestClient() });
+  const app = createApp({ prisma, openaiClient: makeStubOpenaiClient(), jobClient: makeStubJobClient() });
   const token = await signUpAndGetToken(app);
 
   const application = await createTailoredApplication(app, token);

@@ -2,9 +2,11 @@
 
 FlyRank Internship · Backend Track Capstone — Your 10x Solution
 
-## Status: Feature 4 — async PDF report generation (background job) — NOT YET VERIFIED end-to-end
+## Status: Feature 4 — async PDF report generation (background job) — working in production
 
-`POST /applications/:id/report` — reserves a report, enqueues a background job via Inngest, returns `202` immediately. A background function loads the application and its latest valid tailored resume, builds a printable HTML document, renders it to PDF with Playwright, and stores the file. `GET /applications/:id/report` reports `pending`/`done` (with a link)/`failed` (with a safe message). Covers the two remaining required concepts (background jobs + PDF reporting) in one feature, same as planned.
+`POST /applications/:id/report` — reserves a report, dispatches a background job, returns `202` immediately. The background job loads the application and its latest valid tailored resume and renders a PDF (pdfkit), then `GET /applications/:id/report` reports `pending`/`done` (with a link)/`failed` (with a safe message).
+
+Production notes (why it was rewritten after the first deploy): the original stack — Inngest for the background job + Playwright/Chromium for rendering — cannot run on the free Render tier. Inngest only delivers events in production with a hosted account and signing keys (every send failed, so reports sat `pending` forever), and Chromium is not installed in the build and would not fit in a 512MB instance anyway. The background job now runs in-process with retries and the same failure-marking contract, and the renderer is pure-JS pdfkit. Two consequences of the free tier are handled in code: a PENDING row orphaned by an instance restart is re-dispatched after a 2-minute grace period, and a DONE report whose file was wiped with the ephemeral disk is re-rendered on demand when the file is requested.
 
 ```
 POST /applications/:id/report   (Authorization: Bearer <token>)

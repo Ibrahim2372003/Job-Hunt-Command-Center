@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import { createPrismaClient } from "../src/db.js";
 import { buildApplicationReportHtml } from "../src/report.js";
-import { runReportGeneration } from "../src/inngest/functions/generateApplicationReport.js";
+import { runReportGeneration } from "../src/reportJob.js";
 import { REPORTS_DIR } from "../src/paths.js";
 
 // No default: see applications.test.js. Pure buildApplicationReportHtml
@@ -165,7 +165,7 @@ dbTest("runReportGeneration: no valid tailored resume — throws, report is left
   await assert.rejects(() => runReportGeneration({ prisma, reportId: report.id, renderFn: stubRender }), /no valid tailored resume/);
 
   const stored = await prisma.report.findUnique({ where: { id: report.id } });
-  assert.equal(stored.status, "PENDING", "runReportGeneration itself doesn't mark failure — the Inngest wrapper does, only once retries are exhausted");
+  assert.equal(stored.status, "PENDING", "runReportGeneration itself doesn't mark failure — the background job runner does, only once retries are exhausted");
 
   await prisma.$disconnect();
 });

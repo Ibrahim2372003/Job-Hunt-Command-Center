@@ -21,11 +21,10 @@
     "bcryptjs": "^2.4.3",
     "dotenv": "^17.4.2",
     "express": "^4.19.2",
-    "inngest": "^3.27.0",
     "jsonwebtoken": "^9.0.2",
     "openai": "^7.8.0",
-    "pg": "^8.23.1",
-    "playwright": "^1.47.0"
+    "pdfkit": "^0.21.0",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "prisma": "^7.10.1"
